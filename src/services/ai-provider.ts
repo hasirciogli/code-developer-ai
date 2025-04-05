@@ -1,5 +1,9 @@
+import { Tool, ToolListUnion } from "@google/genai";
 import { DeepSeekService, FileStructure } from "./deepseek";
-import { GoogleGenAIService } from "./google-genai";
+import {
+  GoogleGenAIService,
+  GoogleAIChatCompletionResult,
+} from "./google-genai";
 
 export type AIProvider = "deepseek" | "google";
 
@@ -69,7 +73,7 @@ export interface AIServiceConfig {
 
 // Interface for chat message
 export interface ChatMessage {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
 }
 
@@ -110,8 +114,9 @@ export class AIService {
   // Chat completion API
   async getChatCompletion(
     messages: ChatMessage[],
-    options: any = {}
-  ): Promise<string> {
+    options: any = {},
+    tools?: ToolListUnion
+  ): Promise<GoogleAIChatCompletionResult> {
     try {
       if (this.currentProvider === "deepseek") {
         const response = await this.deepseekService.getChatCompletion(
@@ -119,14 +124,15 @@ export class AIService {
           undefined,
           { ...options, model: this.currentModel }
         );
-        return response.choices[0].message.content;
+        return { text: response.choices[0].message.content };
       } else {
         const response = await this.googleService.getChatCompletion(
           messages,
           this.currentModel,
-          options
+          options,
+          tools
         );
-        return response.text || "";
+        return response;
       }
     } catch (error) {
       console.error("AI service error:", error);
@@ -140,7 +146,9 @@ export class AIService {
     options: any = {},
     onChunk: (chunk: string) => void,
     onEnd: () => void,
-    onError: (error: Error) => void
+    onError: (error: Error) => void,
+    tools?: ToolListUnion,
+    toolCall?: (functionName: string, args: any) => Promise<void>
   ): Promise<void> {
     try {
       if (this.currentProvider === "deepseek") {
@@ -149,7 +157,8 @@ export class AIService {
           onEnd,
           onChunk,
           onError,
-          { ...options, model: this.currentModel }
+          { ...options, model: this.currentModel },
+          tools
         );
       } else {
         await this.googleService.getChatCompletionStream(
@@ -159,7 +168,8 @@ export class AIService {
           onChunk,
           onEnd,
           onError,
-          undefined
+          tools,
+          toolCall
         );
       }
     } catch (error) {

@@ -8,6 +8,8 @@ import ReactMarkdown from 'react-markdown';
 import { createId } from '@paralleldrive/cuid2';
 import { log } from 'console';
 import { Button } from './ui/button';
+import { SocketService } from '@/services/socket-service';
+import { useTools } from '@/hooks/useTools';
 
 interface PromptEditorProps {
   projectSlug: string;
@@ -35,7 +37,6 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
   const [activeTab, setActiveTab] = useState<'prompt' | 'chat'>('chat');
   const [aiProvider, setAiProvider] = useState<AIProvider>(localStorage.getItem('aiProvider') as AIProvider || 'google');
   const [aiModel, setAiModel] = useState(localStorage.getItem('aiModel') || 'gemini-1.5-pro-preview-0325');
-  const [localActions, setLocalActions] = useState<Record<string, LocalActionType>>({})
 
   // Chat state
   const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string, id: string, createdAt: string, hidden?: boolean }>>([
@@ -46,21 +47,7 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const addLocalAction = (action: LocalActionType) => {
-    localActions[action.id] = action;
-  }
-
-  const updateLocalAction = (actionId: string, data: any, status?: "pending" | "success" | "error" | "in-progress") => {
-    localActions[actionId] = { ...localActions[actionId], data, status: status || localActions[actionId]?.status || "pending" }
-  }
-
-  const removeLocalAction = (actionId: string) => {
-    delete localActions[actionId];
-  }
-
-  const isLocalActionExists = (actionId: string) => {
-    return localActions[actionId] !== undefined;
-  }
+  const { isConnected, registerCallback, unregisterCallback } = useTools();
 
   // Auto-scroll to bottom of messages
   useEffect(() => {
@@ -71,6 +58,7 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
 
   // Auto-resize the textarea based on content
   useEffect(() => {
+
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
       inputRef.current.style.height = `${inputRef.current.scrollHeight}px`;
@@ -93,60 +81,19 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
   const handleSelectModel = (provider: AIProvider, modelId: string) => {
     setAiProvider(provider);
     setAiModel(modelId);
-    setMessages(prev => [
-      ...prev,
-      {
-        role: 'assistant',
-        content: `AI sağlayıcı ve model değiştirildi: ${provider === 'google' ? 'Google Gemini' : 'DeepSeek'} - ${modelId}`,
-        id: createId(),
-        createdAt: new Date().toISOString()
-      }
-    ]);
+    // setMessages(prev => [
+    //   ...prev,
+    //   {
+    //     role: 'assistant',
+    //     content: `AI sağlayıcı ve model değiştirildi: ${provider === 'google' ? 'Google Gemini' : 'DeepSeek'} - ${modelId}`,
+    //     id: createId(),
+    //     createdAt: new Date().toISOString()
+    //   }
+    // ]);
   };
 
-  const addActionResponseToMessages = (actionId: string, actionResponseResult: string, action: string) => {
-    // Parse the result if it's a string
-    let parsedResult = actionResponseResult;
-    try {
-      if (typeof actionResponseResult === 'string') {
-        parsedResult = JSON.parse(actionResponseResult);
-      }
-    } catch (e) {
-      console.error("Error parsing result:", e);
-    }
-
-    // Create a structured message for the AI
-    const actionResponse = {
-      actionId: actionId,
-      result: parsedResult,
-      action: action
-    };
-
-    // Add the action response to messages
-    setMessages(prev => [...prev, {
-      role: 'assistant',
-      content: JSON.stringify(actionResponse),
-      id: createId(),
-      createdAt: new Date().toISOString(),
-      hidden: true
-    }]);
-
-    // If the action has immediate flag, trigger a new AI response
-    try {
-      const immediate = localActions[actionId]?.immediate;
-      const actionData = typeof actionResponseResult === 'string' ? JSON.parse(actionResponseResult) : actionResponseResult;
-
-      // Always trigger a new AI response for command outputs to ensure AI can process them
-      if (immediate || actionData.isCommandOutput) {
-        console.log("actionData IMMEDIATE", actionData);
-        handleActionSendMessage();
-      }
-    } catch (e) {
-      console.error("Error checking immediate flag:", e);
-    }
-  }
-
-  const handleSendMessage = async (e: React.FormEvent) => {
+  // Handle send message
+  const handleSendMessageAsStream = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim() || isChatLoading) return;
 
@@ -207,13 +154,10 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
         const cleanChunk = chunk.replace('data: ', '').replace("data:", "");
         chunkSum += cleanChunk;
 
-        // Parse actions from the chunk
-        const processedChunk = parseActionsFromChunk(chunkSum);
-
         // Update Message
         setMessages(prev => prev.map(msg => msg.id === newMessageId ? {
           ...msg,
-          content: processedChunk
+          content: chunkSum
         } : msg));
       }
 
@@ -234,7 +178,15 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
     }
   };
 
-  const handleActionSendMessage = async () => {
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim() || isChatLoading) return;
+
+    const userMessage = chatInput.trim();
+    setChatInput('');
+    setMessages(prev => [...prev, { role: 'user', content: userMessage, id: createId(), createdAt: new Date().toISOString() }]);
+    setIsChatLoading(true);
+
     try {
       // Call the AI chat API
       const streamResponse = await fetch('/api/ai/chat', {
@@ -243,8 +195,8 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
           'Content-Type': 'text/event-stream',
         },
         body: JSON.stringify({
-          stream: true,
-          message: undefined,
+          stream: false,
+          message: userMessage,
           history: messages.map(msg => ({
             role: msg.role === 'user' ? 'user' : 'assistant',
             content: msg.content
@@ -258,16 +210,14 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
         throw new Error('API request failed');
       }
 
-      setIsChatLoading(true);
+      const data = await streamResponse.json();
 
-      const reader = streamResponse.body
-        ?.pipeThrough(new TextDecoderStream())
-        .getReader();
+      setIsChatLoading(false);
 
       const newMessageId = createId();
       const newMessageCreatedAt = new Date().toISOString();
       const newMessageRole = 'assistant';
-      const newMessageContent = '';
+      const newMessageContent = data.response;
 
       setMessages(prev => [...prev, {
         role: newMessageRole,
@@ -275,28 +225,6 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
         id: newMessageId,
         createdAt: newMessageCreatedAt
       }]);
-
-      let chunkSum = '';
-
-      while (true) {
-        if (!reader) break;
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = value || '';
-        // remove data: from chunk
-        const cleanChunk = chunk.replace('data: ', '').replace("data:", "");
-        chunkSum += cleanChunk;
-
-        // Parse actions from the chunk
-        const processedChunk = parseActionsFromChunk(chunkSum);
-
-        // Update Message
-        setMessages(prev => prev.map(msg => msg.id === newMessageId ? {
-          ...msg,
-          content: processedChunk
-        } : msg));
-      }
-
     } catch (error) {
       console.error('Error sending message:', error);
       setMessages(prev => [...prev, {
@@ -312,67 +240,12 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
         inputRef.current.focus();
       }
     }
-  }
+  };
 
-  const parseActionsFromChunk = (summedChunk: string) => {
-    // eğer başlangıç varsa ve eğer kapatılmadı ise gerisini gönderme.
-    if (summedChunk.includes('<x-system-action>') && !summedChunk.includes('</x-system-action>')) {
-      const startIndex = summedChunk.indexOf('<x-system-action>');
-      if (startIndex) {
-        return summedChunk.substring(startIndex);
-      } else {
-        return summedChunk;
-      }
-    }
 
-    const matchedActions = summedChunk.match(/<x-system-action>([\s\S]*?)<\/x-system-action>/g);
-    if (matchedActions) {
-      matchedActions.forEach(action => {
-        try {
-          const parsed = JSON.parse(action.replace('<x-system-action>', '').replace('</x-system-action>', ''));
 
-          // Check if action already exists and is not pending
-          if (localActions[parsed.id] && localActions[parsed.id].status !== "pending") {
-            return; // Skip if action already exists and is not pending
-          }
-
-          // Process different action types
-          switch (parsed.action) {
-            case "create_file":
-              createFileAction(parsed);
-              break;
-            case "write_file":
-              writeFileAction(parsed);
-              break;
-            case "run_command":
-              runCommandAction(parsed);
-              break;
-            case "read_file":
-              readFileAction(parsed);
-              break;
-            case "read_file_and_send_to_ai_chat_session":
-              readFileAndSendToAiChatSession(parsed);
-              break;
-            default:
-              console.warn(`Unknown action type: ${parsed.action}`);
-          }
-        } catch (e) {
-          console.error("Error parsing action:", e);
-        }
-      });
-    }
-    return summedChunk.replaceAll(/<x-system-action>([\s\S]*?)<\/x-system-action>/g, '');
-  }
-
-  const createFileAction = async (action: ActionType) => {
-    addLocalAction({
-      action: action.action,
-      id: action.id,
-      immediate: action.immediate,
-      status: "in-progress",
-      data: action
-    });
-
+  // clientside actions
+  const createFileAction = async (filePath: string, callback: (status: boolean, result: any) => void) => {
     try {
       // Get the WebContainer instance from the store
       const webcontainerInstance = useStore.getState().webcontainerInstance;
@@ -382,59 +255,24 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
       }
 
       // Parse the action data to get file path
-      const actionData = action;
-      const filePath = actionData.file_path;
-
       if (!filePath) {
-        throw new Error("File path is missing in the action data");
+        return callback(false, "File path is missing");
       }
 
       // Create the file in WebContainer
       await webcontainerInstance.fs.writeFile(filePath, "");
 
       // Update action status to success
-      updateLocalAction(action.id, {
-        success: true,
-        message: `File created successfully: ${filePath}`,
-        immediate: false,
-        isCommandOutput: false
-      }, "success");
-
-      // Add a success message to the chat
-      addActionResponseToMessages(
-        action.id,
-        JSON.stringify({ success: true, message: `File created successfully: ${filePath}` }),
-        action.action
-      );
+      callback(true, `File created successfully: ${filePath}`);
     } catch (error) {
       console.error("Error creating file:", error);
 
       // Update action status to error
-      updateLocalAction(action.id, {
-        success: false,
-        message: `Error creating file: ${error instanceof Error ? error.message : "Unknown error"}`,
-        immediate: false,
-        isCommandOutput: false
-      }, "error");
-
-      // Add an error message to the chat
-      addActionResponseToMessages(
-        action.id,
-        JSON.stringify({ success: false, error: error instanceof Error ? error.message : "Unknown error" }),
-        action.action
-      );
+      callback(false, `Error creating file: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
 
-  const readFileAction = async (action: ActionType) => {
-    addLocalAction({
-      action: action.action,
-      id: action.id,
-      immediate: action.immediate,
-      status: "in-progress",
-      data: action
-    });
-
+  const readFileAction = async (filePath: string, callback: (status: boolean, result: any) => void) => {
     try {
       // Get the WebContainer instance from the store
       const webcontainerInstance = useStore.getState().webcontainerInstance;
@@ -444,62 +282,21 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
       }
 
       // Parse the action data to get file path
-      const actionData = action;
-      const filePath = actionData.file_path;
 
       if (!filePath) {
-        throw new Error("File path is missing in the action data");
+        return callback(false, "File path is missing");
       }
 
       const fileContent = await webcontainerInstance.fs.readFile(filePath, 'utf-8');
 
-      // Update action status to success
-      updateLocalAction(action.id, {
-        success: true,
-        message: `File content: ${fileContent}`,
-        immediate: action.immediate,
-        isCommandOutput: false
-      }, "success");
-
-      // Add the file content to the chat
-      addActionResponseToMessages(
-        action.id,
-        JSON.stringify({
-          success: true,
-          message: `File content: ${fileContent}`,
-          content: fileContent // Include the actual content for AI to process
-        }),
-        action.action
-      );
+      callback(true, `File content: ${fileContent}`);
     } catch (error) {
       console.error("Error reading file:", error);
-
-      // Update action status to error
-      updateLocalAction(action.id, {
-        success: false,
-        message: `Error reading file: ${error instanceof Error ? error.message : "Unknown error"}`,
-        immediate: action.immediate,
-        isCommandOutput: false
-      }, "error");
-
-      // Add an error message to the chat
-      addActionResponseToMessages(
-        action.id,
-        JSON.stringify({ success: false, error: error instanceof Error ? error.message : "Unknown error" }),
-        action.action
-      );
+      callback(false, `Error reading file: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
 
-  const writeFileAction = async (action: ActionType) => {
-    addLocalAction({
-      action: action.action,
-      id: action.id,
-      immediate: action.immediate,
-      status: "in-progress",
-      data: action
-    });
-
+  const writeFileAction = async (filePath: string, content: string, callback: (status: boolean, result: any) => void) => {
     try {
       // Get the WebContainer instance from the store
       const webcontainerInstance = useStore.getState().webcontainerInstance;
@@ -509,83 +306,42 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
       }
 
       // Parse the action data to get file path and content
-      const actionData = action;
-      const filePath = actionData.file_path;
-      const content = actionData.content;
 
       if (!filePath) {
-        throw new Error("File path is missing in the action data");
+        return callback(false, "File path is missing");
       }
 
       if (content === undefined) {
-        throw new Error("Content is missing in the action data");
+        return callback(false, "Content is missing");
       }
 
-      console.log("writeFileAction", filePath, content);
-
-      // Write the content to the file in WebContainer
+      // Use socket service to write to the file
       await webcontainerInstance.fs.writeFile(filePath, content);
 
-      // Update action status to success
-      updateLocalAction(action.id, {
-        success: true,
-        message: `Content written to file: ${filePath}`,
-        immediate: action.immediate,
-        isCommandOutput: false
-      }, "success");
+      callback(true, `Content written to file: ${filePath}`);
 
-      // Add a success message to the chat
-      addActionResponseToMessages(
-        action.id,
-        JSON.stringify({ success: true, message: `Content written to file: ${filePath}` }),
-        action.action
-      );
+
     } catch (error) {
       console.error("Error writing to file:", error);
-
-      // Update action status to error
-      updateLocalAction(action.id, {
-        success: false,
-        message: `Error writing to file: ${error instanceof Error ? error.message : "Unknown error"}`,
-        immediate: action.immediate,
-        isCommandOutput: false
-      }, "error");
-
-      // Add an error message to the chat
-      addActionResponseToMessages(
-        action.id,
-        JSON.stringify({ success: false, error: error instanceof Error ? error.message : "Unknown error" }),
-        action.action
-      );
+      callback(false, `Error writing to file: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
 
-  const runCommandAction = async (action: ActionType) => {
-    addLocalAction({
-      action: action.action,
-      id: action.id,
-      immediate: action.immediate,
-      status: "in-progress",
-      data: action
-    });
-
+  const runCommandAction = async (command: string, callback: (status: boolean, result: any) => void) => {
     try {
       // Get the WebContainer instance from the store
       const webcontainerInstance = useStore.getState().webcontainerInstance;
 
       if (!webcontainerInstance) {
-        throw new Error("WebContainer is not initialized");
+        return callback(false, "WebContainer is not initialized");
       }
 
       // Parse the action data to get command
-      const actionData = action;
-      const command = actionData.command;
 
       if (!command) {
-        throw new Error("Command is missing in the action data");
+        return callback(false, "Command is missing");
       }
 
-      console.log("runCommandAction", command);
 
       // Execute the command in WebContainer
       const process = await webcontainerInstance.spawn('sh', ['-c', command]);
@@ -604,122 +360,90 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
       // Wait for the process to exit
       const exitCode = await process.exit;
 
-      // Add command output to the store for WebContainerConsole to display
-      useStore.getState().addCommandOutput(command, output);
+      callback(true, `Command executed successfully: ${command}\n${output}`);
 
-      // Update action status to success
-      updateLocalAction(action.id, {
-        success: true,
-        message: `Command executed successfully with exit code ${exitCode}`,
-        immediate: action.immediate,
-        isCommandOutput: true
-      }, "success");
-
-      // Create a more detailed response with the command output
-      const responseData = {
-        success: true,
-        message: `Command executed successfully with exit code ${exitCode}`,
-        command: command,
-        output: output,
-        exitCode: exitCode,
-        // Add a flag to indicate this is a command output that should be processed
-        isCommandOutput: true
-      };
-
-      // Add a success message to the chat with the command output
-      addActionResponseToMessages(
-        action.id,
-        JSON.stringify(responseData),
-        action.action
-      );
     } catch (error) {
       console.error("Error executing command:", error);
-
-      // Update action status to error
-      updateLocalAction(action.id, {
-        success: false,
-        message: `Error executing command: ${error instanceof Error ? error.message : "Unknown error"}`,
-        immediate: action.immediate,
-        isCommandOutput: true
-      }, "error");
-
-      // Add an error message to the chat
-      addActionResponseToMessages(
-        action.id,
-        JSON.stringify({
-          success: false,
-          error: error instanceof Error ? error.message : "Unknown error",
-          command: action.command || "unknown command"
-        }),
-        action.action
-      );
+      callback(false, `Error executing command: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
 
-  const readFileAndSendToAiChatSession = async (action: ActionType) => {
-    addLocalAction({
-      action: action.action,
-      id: action.id,
-      immediate: action.immediate,
-      status: "in-progress",
-      data: action
-    });
-
+  const listFilesAction = async (folderPath: string, callback: (status: boolean, result: any) => void) => {
     try {
+      // Get the WebContainer instance from the store
       const webcontainerInstance = useStore.getState().webcontainerInstance;
+
       if (!webcontainerInstance) {
-        throw new Error("WebContainer is not initialized");
+        return callback(false, "WebContainer is not initialized");
       }
 
-      const actionData = action;
-      const filePath = actionData.file_path;
-      const fileRandomReadId = actionData.file_random_read_id;
-
-      if (!filePath) {
-        throw new Error("File path is missing in the action data");
-      }
-
-      const fileContent = await webcontainerInstance.fs.readFile(filePath, 'utf-8');
-      console.log("readFileAndSendToAiChatSession", filePath, fileContent);
-
-      // Update action status to success
-      updateLocalAction(action.id, {
-        success: true,
-        message: `File content: ${fileContent}`,
-        immediate: action.immediate,
-        isCommandOutput: false
-      }, "success");
-
-      // Add the file content to the chat
-      addActionResponseToMessages(
-        action.id,
-        JSON.stringify({
-          success: true,
-          message: `File content: ${fileContent}`,
-          content: fileContent,
-          file_random_read_id: fileRandomReadId
-        }),
-        action.action
-      );
+      const files = await webcontainerInstance.fs.readdir(folderPath);
+      callback(true, `Files in ${folderPath}: ${files.join(', ')}`);
     } catch (error) {
-      console.error("Error reading file and sending to AI chat session:", error);
-
-      // Update action status to error
-      updateLocalAction(action.id, {
-        success: false,
-        message: `Error reading file and sending to AI chat session: ${error instanceof Error ? error.message : "Unknown error"}`,
-        immediate: action.immediate,
-        isCommandOutput: false
-      }, "error");
-
-      // Add an error message to the chat
-      addActionResponseToMessages(
-        action.id,
-        JSON.stringify({ success: false, error: error instanceof Error ? error.message : "Unknown error" }),
-        action.action
-      );
+      console.error("Error listing files:", error);
+      callback(false, `Error listing files: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   }
+
+  const createDirectoryAction = async (directoryPath: string, callback: (status: boolean, result: any) => void) => {
+    try {
+      // Get the WebContainer instance from the store
+      const webcontainerInstance = useStore.getState().webcontainerInstance;
+
+      if (!webcontainerInstance) {
+        return callback(false, "WebContainer is not initialized");
+      }
+
+      await webcontainerInstance.fs.mkdir(directoryPath);
+      callback(true, `Directory created successfully: ${directoryPath}`);
+    } catch (error) {
+      console.error("Error creating directory:", error);
+      callback(false, `Error creating directory: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
+  }
+
+  useEffect(() => {
+    if (isConnected) {
+      registerCallback("create_file", ({ functionName, args, callBack }) => {
+        createFileAction(args.filePath, (status, result) => {
+          callBack({ status, result });
+        });
+      });
+      registerCallback("read_file", ({ functionName, args, callBack }) => {
+        readFileAction(args.filePath, (status, result) => {
+          callBack({ status, result });
+        });
+      });
+      registerCallback("write_file", ({ functionName, args, callBack }) => {
+        writeFileAction(args.filePath, args.content, (status, result) => {
+          callBack({ status, result });
+        });
+      });
+      registerCallback("run_command", ({ functionName, args, callBack }) => {
+        runCommandAction(args.command, (status, result) => {
+          callBack({ status, result });
+        });
+      });
+      registerCallback("list_files", ({ functionName, args, callBack }) => {
+        listFilesAction(args.folderPath, (status, result) => {
+          callBack({ status, result });
+        });
+      });
+      registerCallback("create_directory", ({ functionName, args, callBack }) => {
+        createDirectoryAction(args.directoryPath, (status, result) => {
+          callBack({ status, result });
+        });
+      });
+    }
+
+    return () => {
+      unregisterCallback("read_file");
+      unregisterCallback("write_file");
+      unregisterCallback("run_command");
+      unregisterCallback("list_files");
+      unregisterCallback("create_directory");
+    }
+  }, [isConnected]);
 
   return (
     <div className="flex flex-col h-full bg-white">
@@ -748,7 +472,7 @@ export default function PromptEditor({ projectSlug }: PromptEditorProps) {
                   {message.role === 'assistant' ? (
                     <div className="prose prose-sm max-w-none">
                       <ReactMarkdown>
-                        {parseActionsFromChunk(message.content)}
+                        {message.content}
                       </ReactMarkdown>
                     </div>
                   ) : (

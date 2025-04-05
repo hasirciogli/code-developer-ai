@@ -1,3 +1,4 @@
+import { log } from "console";
 import { FileStructure } from "./deepseek";
 import {
   GoogleGenAI,
@@ -7,6 +8,8 @@ import {
   Tool,
   FunctionCall,
   FunctionDeclaration,
+  ToolListUnion,
+  FunctionCallingConfigMode,
 } from "@google/genai";
 
 export interface GoogleGenAIConfig {
@@ -137,9 +140,12 @@ export class GoogleGenAIService {
         contents: contents,
         model: model,
         config: {
+          ...generationConfig,
           tools: tools,
         },
       });
+
+      console.log("tools", tools);
 
       // 4. Parse the response - Handle Text and Function Calls
       const candidate = result.candidates?.[0];
@@ -201,7 +207,8 @@ export class GoogleGenAIService {
     onChunk: (chunk: string) => void,
     onEnd: () => void,
     onError: (error: Error) => void,
-    tools?: Tool[]
+    tools?: ToolListUnion,
+    toolCall?: (functionName: string, args: any) => Promise<void>
   ): Promise<void> {
     try {
       // 1. Format messages and separate system instruction
@@ -256,11 +263,26 @@ export class GoogleGenAIService {
         contents: contents,
         model: model,
         config: {
+          ...generationConfig,
           tools: tools,
         },
       });
 
       for await (const chunk of result) {
+        // check if chunk is function call
+        if (chunk.candidates?.[0]?.content?.parts?.[0]?.functionCall) {
+          if (
+            toolCall &&
+            chunk.candidates[0].content.parts[0].functionCall.name &&
+            chunk.candidates[0].content.parts[0].functionCall.args
+          ) {
+            toolCall(
+              chunk.candidates[0].content.parts[0].functionCall.name,
+              chunk.candidates[0].content.parts[0].functionCall.args
+            );
+          }
+        }
+
         // chack text
         if (chunk.candidates?.[0]?.content?.parts?.[0]?.text) {
           onChunk(chunk.candidates[0].content.parts[0].text || "");

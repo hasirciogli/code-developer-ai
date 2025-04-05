@@ -11,6 +11,7 @@ import FileExplorer from '@/components/FileExplorer';
 import WebContainerConsole from '@/components/WebContainerConsole';
 import WebContainerInitializer from '@/components/WebContainerInitializer';
 import dynamic from 'next/dynamic';
+import { useSocketIO } from '@/hooks/useSocketIO';
 
 interface ProjectPageProps {
   params: Promise<{
@@ -29,6 +30,7 @@ export default function ProjectPage({ params }: ProjectPageProps) {
   const [rightSizes, setRightSizes] = useState<number[]>([70, 30]); // Height split for code/preview and console
   const [codeSizes, setCodeSizes] = useState<number[]>([30, 70]); // Width split for file tree and code editor
   const [isPreviewMode, setIsPreviewMode] = useState(false);
+  const { isConnected } = useSocketIO();
 
   const handleLogout = async () => {
     try {
@@ -44,6 +46,7 @@ export default function ProjectPage({ params }: ProjectPageProps) {
       console.error('Logout error:', error);
     }
   };
+
 
   return (
     <div className="h-screen flex flex-col">
@@ -61,6 +64,13 @@ export default function ProjectPage({ params }: ProjectPageProps) {
           </div>
         </div>
       </header>
+
+      {/* Socket Connection Overlay */}
+      {!isConnected && (
+        <div className="absolute top-0 left-0 w-full h-full bg-black/50 flex items-center justify-center">
+          <div className="text-white text-2xl font-bold">Connecting to server...</div>
+        </div>
+      )}
 
       {/* Main content */}
       <div className="flex-1 overflow-hidden">

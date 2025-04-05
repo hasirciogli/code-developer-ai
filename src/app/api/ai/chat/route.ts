@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
 import { AIService, ChatMessage } from "@/services/ai-provider";
+import { SocketService } from "@/services/socket-service";
+import { Type, Tool } from "@google/genai";
+import { GoogleAIChatCompletionResult } from "@/services/google-genai";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
 
 // Initialize AI Service with default provider and model
 const aiService = new AIService({
@@ -9,138 +14,280 @@ const aiService = new AIService({
   googleApiKey: process.env.GOOGLE_AI_API_KEY,
 });
 
-const actionList = [
-  {
+const socketService = new SocketService();
+
+const Functions = {
+  create_file: async ({
+    filePath,
+    content,
+    userId,
+  }: {
+    filePath: string;
+    content: string;
+    userId: string;
+  }) => {
+    console.log("create_file", filePath);
+    return {
+      status: true,
+      data: "File created successfully",
+    };
+    await socketService.callClientsideFunction(
+      "create_file",
+      {
+        filePath,
+      },
+      userId
+    );
+  },
+  write_file: async ({
+    filePath,
+    content,
+    userId,
+  }: {
+    filePath: string;
+    content: string;
+    userId: string;
+  }) => {
+    await socketService.callClientsideFunction(
+      "write_file",
+      {
+        filePath,
+        content,
+      },
+      userId
+    );
+  },
+  read_file: async ({
+    filePath,
+    userId,
+  }: {
+    filePath: string;
+    userId: string;
+  }) => {
+    const { status, data } = await socketService.callClientsideFunction(
+      "read_file",
+      { filePath },
+      userId
+    );
+    return { status, data };
+  },
+  list_files: async ({
+    folderPath,
+    userId,
+  }: {
+    folderPath: string;
+    userId: string;
+  }) => {
+    const { status, data } = await socketService.callClientsideFunction(
+      "list_files",
+      { folderPath },
+      userId
+    );
+    return { status, data };
+  },
+  run_command: async ({
+    command,
+    userId,
+  }: {
+    command: string;
+    userId: string;
+  }) => {
+    const { status, data } = await socketService.callClientsideFunction(
+      "run_command",
+      { command },
+      userId
+    );
+    return { status, data };
+  },
+  create_directory: async ({
+    directoryPath,
+    userId,
+  }: {
+    directoryPath: string;
+    userId: string;
+  }) => {
+    const { status, data } = await socketService.callClientsideFunction(
+      "create_directory",
+      { directoryPath },
+      userId
+    );
+    return { status, data };
+  },
+  send_mail: async ({
+    to,
+    subject,
+    body,
+    userId,
+  }: {
+    to: string;
+    subject: string;
+    body: string;
+    userId: string;
+  }) => {
+    console.log("send_mail", to, subject, body);
+
+    return {
+      status: true,
+      data: "Email sent successfully",
+    };
+  },
+};
+
+const functionCaller = (functionName: string, args: any) => {
+  console.log("functionCaller", functionName, args);
+  return Functions[functionName as keyof typeof Functions](args);
+};
+
+const FunctionDeclarations = {
+  create_file: {
+    name: "create_file",
+    description: "Create a new file with the specified name",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        filePath: {
+          type: Type.STRING,
+          description: "The path of the file to create",
+        },
+      },
+      required: ["filePath"],
+    },
+  },
+  write_file: {
     name: "write_file",
+    description: "Write content to an existing file",
     parameters: {
-      type: "object",
-      id: "cuid()",
-      title: "Dosyaya Yaz",
-      description: "Bir dosyaya içerik yazılacak",
+      type: Type.OBJECT,
       properties: {
-        immediate: {
-          type: "boolean",
-          description: "İmmediate action call back",
+        filePath: {
+          type: Type.STRING,
+          description: "The path of the file to write to",
         },
-        file_path: { type: "string", description: "Yazılacak dosya yolu" },
-        content: { type: "string", description: "Dosya içeriği" },
+        content: {
+          type: Type.STRING,
+          description: "The content to write to the file",
+        },
+        userId: {
+          type: Type.STRING,
+          description: "The ID of the user making the request",
+        },
       },
-      required: ["file_path", "content"],
+      required: ["filePath", "content"],
     },
-    description: "Bir dosyaya içerik yaz",
   },
-  {
+  read_file: {
     name: "read_file",
+    description: "Read the contents of a file",
     parameters: {
-      type: "object",
-      id: "cuid()",
-      title: "Dosyayı Oku",
-      description: "Bir dosyayı oku",
+      type: Type.OBJECT,
       properties: {
-        immediate: {
-          type: "boolean",
-          description: "İmmediate action call back",
+        filePath: {
+          type: Type.STRING,
+          description: "The path of the file to read",
         },
-        file_path: { type: "string", description: "Okunacak dosya yolu" },
+        userId: {
+          type: Type.STRING,
+          description: "The ID of the user making the request",
+        },
       },
-      required: ["file_path"],
+      required: ["filePath"],
     },
-    description: "Dosya içeriğini oku",
   },
-  {
+  list_files: {
     name: "list_files",
+    description: "List all files in a directory",
     parameters: {
-      type: "object",
-      id: "cuid()",
-      title: "Klasör İçeriğini Listele",
-      description: "Bir klasör içeriğini listele",
+      type: Type.OBJECT,
       properties: {
-        immediate: {
-          type: "boolean",
-          description: "İmmediate action call back",
+        folderPath: {
+          type: Type.STRING,
+          description: "The path of the directory to list files from",
         },
-        folder_path: { type: "string", description: "Klasör yolu" },
+        userId: {
+          type: Type.STRING,
+          description: "The ID of the user making the request",
+        },
       },
-      required: ["folder_path"],
+      required: ["folderPath"],
     },
-    description: "Klasör içeriğini listele",
   },
-  {
+  run_command: {
     name: "run_command",
+    description: "Run a terminal command",
     parameters: {
-      type: "object",
-      id: "cuid()",
-      title: "Terminal Komutu Çalıştır",
-      description: "Bir terminal komutu çalıştır",
+      type: Type.OBJECT,
       properties: {
-        immediate: {
-          type: "boolean",
-          description: "İmmediate action call back",
-        },
         command: {
-          type: "string",
-          description: "Çalıştırılacak komut (örn: npm install)",
+          type: Type.STRING,
+          description: "The command to run",
+        },
+        userId: {
+          type: Type.STRING,
+          description: "The ID of the user making the request",
         },
       },
       required: ["command"],
     },
-    description: "Terminal komutu çalıştır",
   },
-  {
-    name: "generate_code",
+  create_directory: {
+    name: "create_directory",
+    description: "Create a new directory",
     parameters: {
-      type: "object",
-      id: "cuid()",
-      title: "Kod Üret",
-      description: "Bir kod üret",
+      type: Type.OBJECT,
       properties: {
-        immediate: {
-          type: "boolean",
-          description: "İmmediate action call back",
+        directoryPath: {
+          type: Type.STRING,
+          description: "The path of the directory to create",
         },
-        language: {
-          type: "string",
-          description: "Kodun dili (örn: javascript, python)",
-        },
-        file_path: {
-          type: "string",
-          description:
-            "Tam dosya yolu + .dosyaTipi (örn: ./src/components/Button.tsx)",
-        },
-        code: { type: "string", description: "Üretilecek kod" },
-      },
-      required: ["language", "file_path", "code"],
-    },
-    description: "Belirli bir dilde kod üret",
-  },
-  {
-    name: "read_file_and_send_to_ai_chat_session",
-    parameters: {
-      type: "object",
-      id: "cuid()",
-      title: "Dosyayı Oku ve AI Chat'e Gönder",
-      description: "Dosyayı oku ve AI chat'e gönder",
-      properties: {
-        immediate: {
-          type: "boolean",
-          description: "İmmediate action call back",
-        },
-        file_path: { type: "string", description: "Okunacak dosya yolu" },
-        file_random_read_id: {
-          type: "string",
-          description: "Dosya içeriğini ilişkilendirmek için kullanılacak ID",
+        userId: {
+          type: Type.STRING,
+          description: "The ID of the user making the request",
         },
       },
-      required: ["file_path", "file_random_read_id"],
+      required: ["directoryPath"],
     },
-    description: "Dosyayı oku ve AI chat'e gönder",
   },
-];
-
+  send_mail: {
+    name: "send_mail",
+    description: "Send an email",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        to: {
+          type: Type.STRING,
+          description: "The email address of the recipient",
+        },
+        subject: {
+          type: Type.STRING,
+          description: "The subject of the email",
+        },
+        body: {
+          type: Type.STRING,
+          description: "The body of the email",
+        },
+      },
+      required: ["to", "subject", "body"],
+    },
+  },
+};
 
 export async function POST(request: Request) {
   try {
     const { message, history, provider, model, stream } = await request.json();
+
+    const session = await getServerSession(authOptions);
+
+    if (!session) {
+      return NextResponse.json(
+        {
+          error: "Unauthorized",
+        },
+        { status: 401 }
+      );
+    }
+
+    const userId = session.user.id;
+
     const streamMode = stream || false;
 
     // Switch provider and model if specified
@@ -156,43 +303,44 @@ export async function POST(request: Request) {
     
     ⚠️ CRITICAL RULES:
     - The project root is always \`./\`. Never assume or use nested folders unless explicitly stated.
-    - Each action must be wrapped in <x-system-action> tags — one per block.
-    - Before each action, include a short explanation in plain text of what you're about to do.
-    - EVERY action MUST include a unique "id" field with a UUID format (e.g., "123e4567-e89b-12d3-a456-426614174000").
-    - NEVER use generate_code and write_file actions together in the same response.
-    - If you need to generate complex code, use ONLY the generate_code action as the final action.
-    - For simple/short code snippets, use ONLY the write_file action directly.
-    - ALWAYS USE PROPER JSON FORMAT - DO NOT BREAK JSON STRINGS ACROSS LINES.
-    - YOU MUST ONLY USE THE ACTIONS LISTED BELOW. DO NOT INVENT NEW ACTIONS.
-    - IF AN ACTION HAS THE "immediate" PARAMETER, EITHER SEND IT AS THE LAST ACTION OR SEND ONLY ONE ACTION WITH "immediate" PARAMETER.
+    - You have access to various tools that you can call directly.
+    - Before each tool call, include a short explanation in plain text of what you're about to do.
+    - YOU MUST ONLY USE THE TOOLS LISTED BELOW. DO NOT INVENT NEW TOOLS. AND DO NOT TELL ABOUT THE TOOLS YOU ARE USING.
+    - DO NOT WRITE CODE THAT CALLS THE FUNCTIONS DIRECTLY. The system will automatically call the functions for you when you use the function calling mechanism.
+    - DO NOT WRITE CODE LIKE \`print(create_file(file_name="hello.txt"))\`. Instead, just explain what you're going to do and the system will call the function for you.
+    - WHEN YOU WANT TO USE A FUNCTION, JUST EXPLAIN WHAT YOU'RE GOING TO DO IN PLAIN TEXT. For example: "I'll create a file named hello.txt" or "I'll list the files in the current directory."
+    - IMPORTANT: You must use the function calling mechanism provided by the Google AI API. Do not try to call functions directly in your response text.
+    - IMPORTANT: When you want to create a file, just say "I'll create a file named [filename]" and the system will automatically call the create_file function.
+    - IMPORTANT: When you want to write to a file, just say "I'll write [content] to [filename]" and the system will automatically call the write_file function.
+    - IMPORTANT: When you want to read a file, just say "I'll read [filename]" and the system will automatically call the read_file function.
+    - IMPORTANT: When you want to list files, just say "I'll list files in [directory]" and the system will automatically call the list_files function.
+    - IMPORTANT: When you want to run a command, just say "I'll run [command]" and the system will automatically call the run_command function.
+    - IMPORTANT: When you want to create a directory, just say "I'll create a directory named [directory]" and the system will automatically call the create_directory function.
+    - DO NOT USE CUSTOM FORMATS LIKE THIS:
+      \`\`\`
+      I'll create a file named \`neemo.rs\`.
+      \`\`\`tool_code
+      {"tool_code": "create_file", "file_name": "neemo.rs"}
+      \`\`\`
+      \`\`\`
+    - INSTEAD, JUST SAY:
+      \`\`\`
+      I'll create a file named neemo.rs
+      \`\`\`
+    - IMPORTANT: You must use the function calling mechanism provided by the Google AI API. The API will automatically detect your intent and call the appropriate function.
+    - IMPORTANT: Do not try to call functions directly in your response text. Just describe what you're going to do, and the API will handle the function call.
     
-    📦 EXAMPLE FORMAT:
-    Creating base HTML file...
-    <x-system-action>
-    {
-      "id": "123e4567-e89b-12d3-a456-426614174000",
-      "action": "write_file",
-      "file_path": "./index.html",
-      "content": "<!DOCTYPE html>\\n<html>...</html>"
-    }
-    </x-system-action>
+    📦 EXAMPLE FORMAT for UI:
+    Creating base HTML file... (call function: create_file behind the scenes)
     
-    For complex code generation:
-    Generating complex React component...
-    <x-system-action>
-    {
-      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "action": "generate_code",
-      "language": "typescript",
-      "file_path": "./src/components/ComplexComponent.tsx",
-      "code": "// Complex component code will be generated in a separate request"
-    }
-    </x-system-action>
+    📦 EXAMPLE OF FUNCTION CALLING:
+    User: Create a file named example.txt
+    Assistant: I'll create a file named example.txt
+    [The system will automatically call the create_file function with filePath="example.txt"]
     
-    Available Actions:
-    ${actionList
-      .map((action) => `- ${action.name}: ${action.description}`)
-      .join("\n")}
+    User: Write "Hello, world!" to example.txt
+    Assistant: I'll write "Hello, world!" to example.txt
+    [The system will automatically call the write_file function with filePath="example.txt" and content="Hello, world!"]
     `,
       },
       ...history.map((msg: any) => ({
@@ -263,64 +411,187 @@ hello();
         });
       }
 
-      if (streamMode) {
-        const encoder = new TextEncoder();
-        // Create a streaming response
-        const customReadable = new ReadableStream({
-          start(controller) {
-            // Get chat completion from AI service
-            aiService.getChatCompletionStream(
-              messages,
-              {
-                temperature: 0.7,
-                max_tokens: 2048,
-              },
-              (chunk) => {
-                controller.enqueue(encoder.encode(`data: ${chunk}`));
-              },
-              () => {
-                controller.close();
-              },
-              (error) => {
-                controller.error(error);
-              }
+      // if (streamMode) {
+      //   const encoder = new TextEncoder();
+      //   // Create a streaming response
+      //   const customReadable = new ReadableStream({
+      //     start(controller) {
+      //       // Get chat completion from AI service
+      //       let sumChunk = "";
+      //       aiService.getChatCompletionStream(
+      //         messages,
+      //         {
+      //           temperature: 0.7,
+      //           max_tokens: 2048,
+      //         },
+      //         (chunk) => {
+      //           controller.enqueue(encoder.encode(`data: ${chunk}`));
+      //         },
+      //         () => {
+      //           controller.close();
+      //         },
+      //         (error) => {
+      //           controller.error(error);
+      //         },
+      //         Object.values(FunctionDeclarations) as Tool[],
+      //         async (functionName: string, args: any) => {
+      //           console.log(
+      //             "Function call in streaming mode:",
+      //             functionName,
+      //             args
+      //           );
+      //           try {
+      //             // Add userId to the function arguments
+      //             const functionArgs = {
+      //               ...args,
+      //               userId: userId || "default-user",
+      //             };
+
+      //             // Call the function
+      //             const result = await functionCaller(
+      //               functionName,
+      //               functionArgs
+      //             );
+      //             console.log("Function result:", result);
+
+      //             // Add function results to the conversation
+      //             messages.push({
+      //               role: "tool",
+      //               content: JSON.stringify({
+      //                 name: functionName,
+      //                 result,
+      //               }),
+      //             });
+      //           } catch (error) {
+      //             console.error(
+      //               `Error executing function ${functionName}:`,
+      //               error
+      //             );
+
+      //             // Add function error to the conversation
+      //             messages.push({
+      //               role: "tool",
+      //               content: JSON.stringify({
+      //                 name: functionName,
+      //                 error:
+      //                   error instanceof Error
+      //                     ? error.message
+      //                     : "Unknown error",
+      //               }),
+      //             });
+      //           }
+      //         }
+      //       );
+      //     },
+      //   });
+
+      //   // Cancel the stream if the request is aborted
+      //   request.signal.onabort = () => {
+      //     customReadable.cancel();
+      //   };
+
+      //   // Return the stream response and keep the connection alive
+      //   return new Response(customReadable, {
+      //     // Set the headers for Server-Sent Events (SSE)
+      //     headers: {
+      //       Connection: "keep-alive",
+      //       "Content-Encoding": "none",
+      //       "Cache-Control": "no-cache, no-transform",
+      //       "Content-Type": "text/event-stream; charset=utf-8",
+      //     },
+      //   });
+      // }
+
+      // else {
+      // Get chat completion from AI service with function declarations
+      const aiResponse: GoogleAIChatCompletionResult =
+        await aiService.getChatCompletion(
+          messages,
+          {
+            temperature: 0.7,
+            max_tokens: 2048,
+          },
+          Object.values(FunctionDeclarations) as Tool[]
+        );
+
+
+      // Handle function calls if present
+      if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
+        console.log(
+          "Function calls detected:",
+          JSON.stringify(aiResponse.toolCalls, null, 2)
+        );
+        const functionResults = [];
+
+        for (const toolCall of aiResponse.toolCalls) {
+          try {
+            // Add userId to the function arguments
+            const args = {
+              ...toolCall.args,
+              userId: userId || "default-user",
+            };
+
+            console.log(
+              `Calling function ${toolCall.name} with args:`,
+              JSON.stringify(args, null, 2)
             );
-          },
+
+            // Call the function
+            const result = await functionCaller(toolCall.name, args);
+            console.log(
+              `Function ${toolCall.name} result:`,
+              JSON.stringify(result, null, 2)
+            );
+
+            functionResults.push({
+              name: toolCall.name,
+              result,
+            });
+          } catch (error) {
+            console.error(`Error executing function ${toolCall.name}:`, error);
+            functionResults.push({
+              name: toolCall.name,
+              error: error instanceof Error ? error.message : "Unknown error",
+            });
+          }
+        }
+
+        // Add function results to the conversation
+        messages.push({
+          role: "tool",
+          content: JSON.stringify(functionResults),
         });
 
-        // Cancel the stream if the request is aborted
-        request.signal.onabort = () => {
-          customReadable.cancel();
-        };
-
-        // Return the stream response and keep the connection alive
-        return new Response(customReadable, {
-          // Set the headers for Server-Sent Events (SSE)
-          headers: {
-            Connection: "keep-alive",
-            "Content-Encoding": "none",
-            "Cache-Control": "no-cache, no-transform",
-            "Content-Type": "text/event-stream; charset=utf-8",
-          },
-        });
-      } else {
-        // Get chat completion from AI service
-        const aiResponse = await aiService.getChatCompletion(messages, {
-          temperature: 0.7,
-          max_tokens: 2048,
-        });
-
-        // Check if the response contains a generate_code action
-        const containsGenerateCode =
-          aiResponse && aiResponse.includes('"action":"generate_code"');
+        // Get a follow-up response from the AI
+        const followUpResponse: GoogleAIChatCompletionResult =
+          await aiService.getChatCompletion(messages, {
+            temperature: 0.7,
+            max_tokens: 2048,
+          });
 
         return NextResponse.json({
-          response: aiResponse || "Üzgünüm, yanıt üretirken bir sorun oluştu.",
-          action: containsGenerateCode ? "generate_code" : null,
+          response:
+            followUpResponse.text ||
+            "Üzgünüm, yanıt üretirken bir sorun oluştu.",
+          action: null,
           provider: currentConfig.provider,
           model: currentConfig.model,
+          functionResults,
         });
       }
+
+      // Check if the response contains a generate_code action
+      const containsGenerateCode =
+        aiResponse.text && aiResponse.text.includes('"action":"generate_code"');
+
+      return NextResponse.json({
+        response:
+          aiResponse.text || "Üzgünüm, yanıt üretirken bir sorun oluştu.",
+        action: containsGenerateCode ? "generate_code" : null,
+        provider: currentConfig.provider,
+        model: currentConfig.model,
+      });
+      // }
     } catch (error) {
       console.error("AI service error:", error);
 
